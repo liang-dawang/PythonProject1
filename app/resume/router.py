@@ -1,7 +1,7 @@
 # app/resume/router.py
 from fastapi import APIRouter
 from .models import ResumeData, ResumeResponse
-from .service import process_resume_data  # 导入服务层函数
+from .servicetext import process_resume_data  # 导入服务层函数
 
 # 创建路由
 resume_router = APIRouter(prefix="/user", tags=["简历相关接口"])

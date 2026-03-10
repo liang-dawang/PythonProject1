@@ -6,272 +6,315 @@ import re
 from dotenv import load_dotenv
 import dashscope
 from dashscope import Generation
+import sys
 
 # ---------------------- 1. 配置项 ----------------------
-INPUT_FILE = r"E:\pycharm\PythonProject1\计算机岗位_最终版.xlsx"
-OUTPUT_PORTFOLIO = r"E:\pycharm\PythonProject1\岗位画像单独文件.xlsx"
-OUTPUT_MERGED = r"E:\pycharm\PythonProject1\原数据+画像整合文件.xlsx"
+INPUT_FILE = r"E:\pycharm\PythonProject1\new\岗位分级结果_加权评分制_最终版.xlsx"
+OUTPUT_PORTFOLIO = r"E:\pycharm\PythonProject1\new\岗位画像单独文件.xlsx"
+OUTPUT_MERGED = r"E:\pycharm\PythonProject1\new\原数据+画像整合文件.xlsx"
 
 JOB_NAME_COL = "岗位名称"
 JOB_DETAIL_COL = "岗位详情"
 SALARY_COL = "最终薪资"
+JOB_LEVEL_COL = "岗位级别"
 
-# 大模型配置
+# 调试开关：True=模拟数据，False=真实调用
+DEBUG_MODE = False
+
+# 加载环境变量（官方方式）
 load_dotenv("mima.env")
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
-if not dashscope.api_key:
+API_KEY = os.getenv("DASHSCOPE_API_KEY")
+if not API_KEY and not DEBUG_MODE:
     raise ValueError("❌ 未获取到DASHSCOPE_API_KEY，请检查mima.env文件")
 
 
-# ---------------------- 2. 核心函数 ----------------------
-def classify_job_type(job_name, job_detail):
-    """
-    自动识别岗位类型：实习岗/校招岗/社招岗
-    返回："intern"（实习/校招）、"social"（社招）
-    """
-    text = f"{job_name} {job_detail}".lower()
-    # 实习/校招关键词
-    intern_keywords = ["实习", "实习生", "校招", "应届生", "毕业", "暑期实习", "应届", "毕业生"]
-    # 社招关键词
-    social_keywords = ["经验", "资深", "高级", "3年", "5年", "社招", "全职", "工作经验", "多年"]
+# ---------------------- 2. 核心类实现 ----------------------
+class JobProfileGenerator:
+    """完全适配官方示例的岗位画像生成器"""
 
-    # 优先判断实习岗
-    if any(kw in text for kw in intern_keywords):
-        return "intern"
-    # 再判断社招岗
-    elif any(kw in text for kw in social_keywords):
-        return "social"
-    # 默认按校招处理（兼顾应届生）
-    else:
-        return "intern"
+    def __init__(self):
+        self.level_exp_mapping = {
+            "初级": "1年以内相关工作经验",
+            "中级": "1-3年相关工作经验",
+            "高级": "3年以上相关工作经验",
 
-
-def merge_job_details(df):
-    """按岗位名称分组，整合详情（去重+拼接），并标记岗位类型"""
-    df[JOB_DETAIL_COL] = df[JOB_DETAIL_COL].fillna("无详细信息")
-    job_detail_dict = {}
-    job_type_dict = {}  # 记录每个岗位类别的类型
-
-    # 第一步：先给每条数据打类型标签
-    df["job_type"] = df.apply(lambda row: classify_job_type(row[JOB_NAME_COL], row[JOB_DETAIL_COL]), axis=1)
-
-    # 第二步：按岗位名称分组
-    grouped = df.groupby(JOB_NAME_COL)
-    for job_name, group in grouped:
-        # 整合详情
-        detail_list = group[JOB_DETAIL_COL].tolist()
-        unique_details = []
-        seen = set()
-        for detail in detail_list:
-            if detail not in seen and detail != "无详细信息":
-                seen.add(detail)
-                unique_details.append(detail)
-        merged_detail = "\n".join(unique_details[:10]) if unique_details else "无详细信息"
-        job_detail_dict[job_name] = merged_detail
-
-        # 确定岗位类别类型（多数派原则）
-        job_types = group["job_type"].value_counts()
-        main_type = job_types.index[0] if not job_types.empty else "intern"
-        job_type_dict[job_name] = main_type
-
-    print(f"✅ 完成岗位详情整合，共 {len(job_detail_dict)} 个岗位类别")
-    print(
-        f"📌 岗位类型分布：实习/校招岗 {list(job_type_dict.values()).count('intern')} 个，社招岗 {list(job_type_dict.values()).count('social')} 个")
-    return job_detail_dict, job_type_dict
-
-
-def generate_experience_requirement(job_type, job_name, merged_detail):
-    """根据岗位类型生成对应的经验要求"""
-    if job_type == "intern":
-        # 实习/校招岗：基础技能+项目/短期实习
-        base_requirements = {
-            "开发类": "需掌握基础开发技能，有课程设计或1-3个月相关实习经验优先",
-            "测试类": "需掌握基础测试方法，有测试相关课程/项目或1-3个月测试实习经验优先",
-            "产品类": "需具备产品思维，有竞品分析/原型设计或1-3个月产品实习经验优先",
-            "数据类": "需掌握数据分析/算法基础，有数据相关项目或1-3个月数据分析实习经验优先",
-            "通用类": "有相关专业课程或项目经验优先，有短期实习经验更佳"
         }
-        # 匹配岗位类型
-        if any(kw in job_name for kw in ["开发", "Java", "前端", "Python", "后端", "移动端"]):
-            return base_requirements["开发类"]
-        elif "测试" in job_name:
-            return base_requirements["测试类"]
-        elif "产品" in job_name:
-            return base_requirements["产品类"]
-        elif any(kw in job_name for kw in ["数据", "算法", "分析"]):
-            return base_requirements["数据类"]
-        else:
-            return base_requirements["通用类"]
-    else:
-        # 社招岗：合理的工作经验要求（从详情提取，无则生成默认）
-        # 提取详情中的经验年限
-        exp_pattern = r"(\d+)年以上?经验"
-        match = re.search(exp_pattern, merged_detail)
-        if match:
-            years = match.group(1)
-            # 避免年限过大（最多8年）
-            if int(years) > 8:
-                return f"需{years}年以上相关工作经验，有大型项目落地经验优先"
-            else:
-                return f"需{years}年以上相关工作经验，有对应领域项目经验优先"
-        else:
-            # 无明确年限，按岗位类型生成
-            if any(kw in job_name for kw in ["开发", "Java", "前端"]):
-                return "需3-5年相关开发经验，有微服务/高并发项目经验优先"
-            elif "测试" in job_name:
-                return "需2-4年相关测试经验，有自动化测试/性能测试经验优先"
-            elif "产品" in job_name:
-                return "需3-5年相关产品经验，有独立负责产品模块经验优先"
-            else:
-                return "需2-5年相关工作经验，有对应领域项目经验优先"
 
-
-def generate_portfolio_for_job(job_name, merged_detail, job_type):
-    """按岗位类型生成差异化画像"""
-    # 构造提示词（区分实习/社招）
-    if job_type == "intern":
-        prompt_type = "校招/实习"
-        exp_desc = "实习/项目经验要求（针对在校生/应届生）"
-    else:
-        prompt_type = "社招"
-        exp_desc = "工作经验要求（针对社会招聘）"
-
-    prompt = f"""
-    请你作为资深IT HR，基于【同一岗位类别的所有详情】，生成该岗位的**通用{prompt_type}标准化画像**，
-    严格按照以下维度输出JSON格式（仅输出JSON，无多余文字、换行、空格）：
-
-    维度及输出要求：
-    1. 专业技能：该岗位{prompt_type}必备的核心技术栈、编程语言、框架、工具，用列表形式
-    2. 证书要求：该岗位{prompt_type}的证书要求，有则列具体名称（列表），无则标注"无"
-    3. 创新能力：该岗位{prompt_type}对创新能力的具体要求，无则标注"无"
-    4. 学习能力：该岗位{prompt_type}对学习能力的具体要求，无则标注"无"
-    5. 抗压能力：该岗位{prompt_type}对抗压能力的具体要求，无则标注"无"
-    6. 沟通能力：该岗位{prompt_type}对沟通能力的具体要求，无则标注"无"
-    7. 经验要求：{exp_desc}，无则标注"无"
-
-    岗位名称：{job_name}
-    整合后的所有详情：{merged_detail[:1500]}
-    """
-
-    try:
-        response = Generation.call(
-            model="qwen-plus",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.05,
-            max_tokens=1500,
-            timeout=60
-        )
-
-        if response.status_code == 200 and response.output and response.output.text:
-            json_str = response.output.text.strip().replace("\n", "").replace(" ", "")
-            portfolio = json.loads(json_str)
-            # 兜底：如果经验要求为空，生成合理默认值
-            if not portfolio.get("经验要求") or portfolio["经验要求"] == "无":
-                portfolio["经验要求"] = generate_experience_requirement(job_type, job_name, merged_detail)
-            return portfolio
-        else:
-            raise Exception(f"SDK返回空结果，状态码：{response.status_code}")
-
-    except Exception as e:
-        print(f"⚠️ {job_name} 画像生成失败：{str(e)[:60]}")
-        time.sleep(3)
+    def load_and_clean_data(self):
+        """加载并清洗数据"""
         try:
+            df = pd.read_excel(INPUT_FILE)
+            print(f"✅ 成功加载数据，共{len(df)}条记录")
+
+            # 检查必要列
+            required_cols = [JOB_NAME_COL, JOB_DETAIL_COL]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(f"❌ 数据缺少必要列：{', '.join(missing_cols)}")
+
+            # 数据清洗
+            fill_values = {
+                JOB_NAME_COL: "未知岗位",
+                JOB_DETAIL_COL: "无岗位详情",
+                SALARY_COL: "0",
+                JOB_LEVEL_COL: "未指定"
+            }
+            df = df.fillna(fill_values)
+
+            # 去重+清理空格
+            df = df.drop_duplicates(subset=[JOB_NAME_COL, JOB_DETAIL_COL], keep="first")
+            for col in [JOB_NAME_COL, JOB_DETAIL_COL, JOB_LEVEL_COL]:
+                df[col] = df[col].astype(str).str.strip()
+
+            # 过滤空详情
+            df = df[df[JOB_DETAIL_COL] != "无岗位详情"]
+            print(f"✅ 数据清洗完成，有效记录数：{len(df)}")
+
+            return df
+
+        except Exception as e:
+            print(f"❌ 加载数据失败：{str(e)}")
+            raise
+
+    def group_job_details(self, df):
+        """按岗位+级别分组"""
+        df["分组键"] = df[JOB_NAME_COL] + "_" + df[JOB_LEVEL_COL]
+
+        grouped = df.groupby("分组键").agg({
+            JOB_NAME_COL: "first",
+            JOB_LEVEL_COL: "first",
+            JOB_DETAIL_COL: lambda x: "\n".join(x.unique()),
+            SALARY_COL: "first"
+        }).reset_index(drop=True)
+
+        print(f"✅ 数据分组完成，共{len(grouped)}个岗位级别组合")
+        return grouped
+
+    def generate_prompt(self, job_name, job_level, merged_detail):
+        """生成符合官方调用规范的提示词"""
+        exp_desc = self.level_exp_mapping.get(job_level, "无明确经验要求")
+
+        # 极简提示词，强制JSON输出（官方模型对简洁提示词响应更稳定）
+        prompt_content = f"""
+仅输出JSON格式，不要任何多余文字：
+{{
+  "专业技能": ["核心技术1", "核心技术2"],
+  "证书要求": "无" 或 ["证书名称"],
+  "创新能力": "具体要求" 或 "无",
+  "学习能力": "具体要求" 或 "无",
+  "抗压能力": "具体要求" 或 "无",
+  "沟通能力": "具体要求" 或 "无",
+  "实习能力": "具体要求" 或 "无",
+  "经验要求": "{exp_desc}"
+}}
+
+基于以下信息生成{job_name}({job_level})的岗位画像：
+{merged_detail[:1000]}
+        """
+        return prompt_content.strip()
+
+    def call_dashscope_model(self, prompt):
+        """完全按照官方示例调用模型"""
+        # 调试模式返回模拟数据
+        if DEBUG_MODE:
+            return '''{
+              "专业技能": ["C/C++", "Linux", "数据结构", "STL"],
+              "证书要求": "无",
+              "创新能力": "无",
+              "学习能力": "具备快速学习新技术的能力",
+              "抗压能力": "能承受项目进度压力",
+              "沟通能力": "良好的团队沟通能力",
+              "实习能力": "无",
+              "经验要求": "1-3年相关工作经验"
+            }'''
+
+        # 官方标准调用方式
+        try:
+            messages = [
+                {'role': 'system', 'content': '你是一个专业的IT岗位画像生成助手，仅输出JSON格式内容，无多余文字。'},
+                {'role': 'user', 'content': prompt}
+            ]
+
+            # 完全复刻官方示例的参数
             response = Generation.call(
-                model="qwen-plus",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.05,
+                api_key=API_KEY,  # 显式传入API Key（官方推荐）
+                model="qwen-plus",  # 用官方示例的qwen-plus模型
+                messages=messages,
+                result_format='message',  # 官方必选参数
+                temperature=0.0,  # 0值保证输出稳定
+                max_tokens=1000,
                 timeout=60
             )
-            if response.status_code == 200 and response.output.text:
-                json_str = response.output.text.strip().replace("\n", "").replace(" ", "")
-                portfolio = json.loads(json_str)
-                if not portfolio.get("经验要求") or portfolio["经验要求"] == "无":
-                    portfolio["经验要求"] = generate_experience_requirement(job_type, job_name, merged_detail)
-                return portfolio
+
+            # 官方标准的响应解析
+            if response.status_code == 200:
+                return response.output.choices[0].message.content.strip()
+            else:
+                print(f"❌ 模型调用失败，状态码：{response.status_code}，信息：{response.message}")
+                return ""
+
+        except Exception as e:
+            print(f"❌ 模型调用异常：{str(e)}")
+            return ""
+
+    def parse_profile_json(self, json_str):
+        """安全解析JSON"""
+        if not json_str:
+            return self.get_default_profile()
+
+        try:
+            # 清理非JSON字符
+            json_str = re.sub(r'^[^{]*', '', json_str)
+            json_str = re.sub(r'[^}]*$', '', json_str)
+            profile = json.loads(json_str)
+
+            # 补全缺失字段
+            default = self.get_default_profile()
+            for key in default:
+                profile.setdefault(key, default[key])
+
+            return profile
         except:
-            pass
-        # 生成默认画像（按岗位类型）
-        default_exp = generate_experience_requirement(job_type, job_name, merged_detail)
+            return self.get_default_profile()
+
+    def get_default_profile(self):
+        """默认画像模板"""
         return {
-            "专业技能": [], "证书要求": "无", "创新能力": "无",
-            "学习能力": "无", "抗压能力": "无", "沟通能力": "无",
-            "经验要求": default_exp
+            "专业技能": [],
+            "证书要求": "无",
+            "创新能力": "无",
+            "学习能力": "无",
+            "抗压能力": "无",
+            "沟通能力": "无",
+            "实习能力": "无",
+            "经验要求": "无"
         }
 
+    def generate_all_profiles(self):
+        """主流程"""
+        # 1. 加载数据
+        raw_df = self.load_and_clean_data()
+        grouped_df = self.group_job_details(raw_df)
 
-# ---------------------- 3. 主流程 ----------------------
-if __name__ == "__main__":
+        # 2. 生成画像
+        profiles = []
+        for idx, row in grouped_df.iterrows():
+            job_name = row[JOB_NAME_COL]
+            job_level = row[JOB_LEVEL_COL]
+            merged_detail = row[JOB_DETAIL_COL]
+
+            print(f"\n📌 正在处理：{job_name} - {job_level}（{idx + 1}/{len(grouped_df)}）")
+
+            # 生成提示词
+            prompt = self.generate_prompt(job_name, job_level, merged_detail)
+
+            # 调用模型（官方方式）
+            llm_resp = self.call_dashscope_model(prompt)
+
+            # 解析结果
+            profile = self.parse_profile_json(llm_resp)
+
+            # 构建结果行
+            result_row = {
+                "岗位名称": job_name,
+                "岗位级别": job_level,
+                "专业技能": ", ".join(profile["专业技能"]) if isinstance(profile["专业技能"], list) else profile[
+                    "专业技能"],
+                "证书要求": profile["证书要求"] if not isinstance(profile["证书要求"], list) else ", ".join(
+                    profile["证书要求"]),
+                "创新能力": profile["创新能力"],
+                "学习能力": profile["学习能力"],
+                "抗压能力": profile["抗压能力"],
+                "沟通能力": profile["沟通能力"],
+                "实习能力": profile["实习能力"],
+                "经验要求": profile["经验要求"]
+            }
+            profiles.append(result_row)
+
+            # 控制请求频率
+            time.sleep(1)
+
+        # 3. 保存单独的画像文件
+        profile_df = pd.DataFrame(profiles)
+        profile_df.to_excel(OUTPUT_PORTFOLIO, index=False)
+        print(f"\n✅ 岗位画像单独文件已保存：{OUTPUT_PORTFOLIO}")
+
+        # 4. 整合原数据和画像
+        profile_map = {}
+        for _, row in profile_df.iterrows():
+            profile_map[f"{row['岗位名称']}_{row['岗位级别']}"] = row
+
+        merged_data = raw_df.copy()
+        # 初始化画像列
+        for col in ["专业技能", "证书要求", "创新能力", "学习能力", "抗压能力", "沟通能力", "实习能力", "经验要求"]:
+            merged_data[col] = ""
+
+        # 填充画像数据
+        for idx, row in merged_data.iterrows():
+            key = f"{row[JOB_NAME_COL]}_{row[JOB_LEVEL_COL]}"
+            if key in profile_map:
+                profile = profile_map[key]
+                for col in ["专业技能", "证书要求", "创新能力", "学习能力", "抗压能力", "沟通能力", "实习能力",
+                            "经验要求"]:
+                    merged_data.loc[idx, col] = profile[col]
+
+        # 保存整合文件
+        merged_data.to_excel(OUTPUT_MERGED, index=False)
+        print(f"✅ 原数据+画像整合文件已保存：{OUTPUT_MERGED}")
+
+        return profile_df, merged_data
+
+
+# ---------------------- 3. 测试官方调用（单独验证） ----------------------
+def test_official_call():
+    """单独测试官方示例调用是否正常"""
+    print("🔍 开始测试官方API调用...")
     try:
-        df = pd.read_excel(INPUT_FILE)
-        print(f"✅ 成功读取文件：{INPUT_FILE}")
-        print(f"📊 原始数据共 {len(df)} 行")
+        messages = [
+            {'role': 'system', 'content': 'You are a helpful assistant.'},
+            {'role': 'user', 'content': '你是谁？'}
+        ]
+        response = dashscope.Generation.call(
+            api_key=API_KEY,
+            model="qwen-plus",
+            messages=messages,
+            result_format='message'
+        )
+        print(f"✅ 测试调用成功，响应状态码：{response.status_code}")
+        print(f"✅ 模型返回：{response.output.choices[0].message.content}")
+        return True
     except Exception as e:
-        print(f"❌ 读取文件失败：{str(e)}")
-        exit()
+        print(f"❌ 测试调用失败：{str(e)}")
+        return False
 
-    required_cols = [JOB_NAME_COL, JOB_DETAIL_COL, SALARY_COL]
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        print(f"❌ 缺失必要列：{missing_cols}")
-        print(f"👉 表格所有列名：{df.columns.tolist()}")
-        exit()
 
-    # 步骤1：分组整合详情 + 识别岗位类型
-    job_detail_dict, job_type_dict = merge_job_details(df)
+# ---------------------- 4. 执行入口 ----------------------
+if __name__ == "__main__":
+    # 先测试官方调用是否正常
+    if not DEBUG_MODE:
+        if not test_official_call():
+            print("\n⚠️ API调用测试失败，请先解决密钥/网络问题！")
+            sys.exit(1)
+        print("✅ API调用测试通过，开始生成岗位画像...\n")
 
-    # 步骤2：生成岗位画像（按类型差异化）
-    print("\n🔧 开始为各岗位类别生成差异化画像...")
-    job_portfolio_dict = {}
-    total_jobs = len(job_detail_dict)
+    try:
+        generator = JobProfileGenerator()
+        generator.generate_all_profiles()
+        print("\n🎉 所有任务执行完成！")
+    except Exception as e:
+        print(f"\n❌ 执行失败：{str(e)}")
+        import traceback
 
-    for idx, (job_name, merged_detail) in enumerate(job_detail_dict.items(), 1):
-        job_type = job_type_dict[job_name]
-        portfolio = generate_portfolio_for_job(job_name, merged_detail, job_type)
-        job_portfolio_dict[job_name] = portfolio
+        traceback.print_exc()
+    finally:
+        # 兼容Windows编码的退出逻辑
+        try:
+            if sys.platform == "win32":
+                import msvcrt
 
-        progress = (idx / total_jobs) * 100
-        print(f"🔹 进度：{idx}/{total_jobs} ({progress:.1f}%) - 完成「{job_name}」({job_type}) 画像生成")
-        time.sleep(2)
-
-    # 步骤3：匹配回原数据
-    portfolio_df = pd.DataFrame.from_dict(job_portfolio_dict, orient="index").reset_index()
-    portfolio_df.rename(columns={"index": JOB_NAME_COL}, inplace=True)
-    df_merged = pd.merge(df, portfolio_df, on=JOB_NAME_COL, how="left")
-
-    # 步骤4：保存单独画像文件（补充岗位类型和典型薪资）
-    portfolio_only_df = portfolio_df.copy()
-    # 添加岗位类型
-    portfolio_only_df["岗位类型"] = portfolio_only_df[JOB_NAME_COL].map(job_type_dict)
-    # 补充典型薪资
-    salary_summary = df.groupby(JOB_NAME_COL)[SALARY_COL].apply(
-        lambda x: x.mode()[0] if not x.mode().empty else "").to_dict()
-    portfolio_only_df["典型薪资"] = portfolio_only_df[JOB_NAME_COL].map(salary_summary)
-    # 调整列顺序
-    portfolio_only_df = portfolio_only_df[[
-        JOB_NAME_COL, "岗位类型", "典型薪资", "专业技能", "证书要求",
-        "创新能力", "学习能力", "抗压能力", "沟通能力", "经验要求"
-    ]]
-    portfolio_only_df.to_excel(OUTPUT_PORTFOLIO, index=False)
-    print(f"\n✅ 按岗位分组的画像文件已保存：{OUTPUT_PORTFOLIO}")
-
-    # 步骤5：保存整合文件
-    df_merged.to_excel(OUTPUT_MERGED, index=False)
-    print(f"✅ 原数据+画像整合文件已保存：{OUTPUT_MERGED}")
-
-    # 步骤6：打印示例验证
-    print("\n📋 差异化画像示例：")
-    # 取实习岗和社招岗各一个示例
-    intern_job = [j for j in job_type_dict if job_type_dict[j] == "intern"][0]
-    social_job = [j for j in job_type_dict if job_type_dict[j] == "social"][0]
-
-    print(f"\n【实习/校招岗 - {intern_job}】")
-    intern_port = job_portfolio_dict[intern_job]
-    print(f"典型薪资：{salary_summary.get(intern_job, '')}")
-    print(f"经验要求：{intern_port['经验要求']}")
-    print(f"专业技能：{intern_port['专业技能'][:5]}")  # 只显示前5个
-
-    print(f"\n【社招岗 - {social_job}】")
-    social_port = job_portfolio_dict[social_job]
-    print(f"典型薪资：{salary_summary.get(social_job, '')}")
-    print(f"经验要求：{social_port['经验要求']}")
-    print(f"专业技能：{social_port['专业技能'][:5]}")
+                print("\n按任意键退出...")
+                msvcrt.getch()
+            else:
+                input("按Enter键退出...")
+        except:
+            pass
