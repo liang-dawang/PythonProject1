@@ -1,15 +1,16 @@
-<script setup>
-import ResumeForm from './components/ResumeForm.vue'
-</script>
-
+<!-- src/App.vue -->
 <template>
-  <main class="page">
-    <ResumeForm />
-  </main>
+  <div class="app-root">
+    <router-view />
+  </div>
 </template>
 
+<script setup>
+// 不要 import 任何业务组件！
+</script>
+
 <style scoped>
-.page {
+.app-root {
   min-height: 100vh;
   padding: 20px 12px;
   background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);

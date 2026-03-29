@@ -1,46 +1,65 @@
 import pandas as pd
 from neo4j import GraphDatabase
+import re
 
-# ---------------------- 1. 配置项 ----------------------
+# ---------------------- 1. 配置项（已更新为你的新Excel路径） ----------------------
 NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "12345678"  # 替换为你的密码
-INPUT_FILE = r"E:\pycharm\PythonProject1\岗位画像单独文件.xlsx"
+NEO4J_PASSWORD = "12345678"  # 你的密码
+INPUT_FILE = r"E:\pycharm\PythonProject1\new\岗位画像单独文件（新）.xlsx"  # 已更新
 
-# 现实晋升规则
-LEVEL_HIERARCHY = ["初级", "中级", "高级"]  # 技术岗基础晋升
-TOP_LEVELS = ["顶级"]  # 管理/专家岗
+# 岗位级别配置
+JOB_LEVELS = ["初级", "中级", "高级", "顶级"]
 
-# 同岗位垂直晋升（现实路径）
-INTERNAL_PROMOTION = {
-    "C/C++": ["初级", "中级", "高级"],
-    "Java": ["初级", "中级", "高级"],
-    "前端开发": ["初级", "中级", "高级"],
-    "实施工程师": ["初级", "中级", "高级"],
-    "技术支持工程师": ["初级", "中级", "高级"],
-    "测试工程师": ["初级", "中级", "高级"],
-    "硬件测试": ["初级", "中级", "高级"],
-    "软件测试": ["初级", "中级", "高级"],
-    "科研人员": ["顶级"],  # 专家岗，无内部晋升
-    "项目经理/主管": ["顶级"]  # 管理岗，无内部晋升
-}
-
-# 跨岗位晋升（现实技术→管理路径）
-CROSS_PROMOTION = [
-    # 所有高级技术岗 → 项目经理/主管
-    ("C/C++", "高级", "项目经理/主管", "顶级"),
-    ("Java", "高级", "项目经理/主管", "顶级"),
-    ("前端开发", "高级", "项目经理/主管", "顶级"),
-    ("实施工程师", "高级", "项目经理/主管", "顶级"),
-    ("技术支持工程师", "高级", "项目经理/主管", "顶级"),
-    ("测试工程师", "高级", "项目经理/主管", "顶级"),
-    ("硬件测试", "高级", "项目经理/主管", "顶级"),
-    ("软件测试", "高级", "项目经理/主管", "顶级"),
-    ("科研人员", "顶级", "项目经理/主管", "顶级")  # 专家转管理
+# 所有岗位列表（含级别）
+ALL_JOBS = [
+    ("C/C++", "初级"), ("C/C++", "中级"), ("C/C++", "高级"),
+    ("Java", "初级"), ("Java", "中级"), ("Java", "高级"),
+    ("前端开发", "初级"), ("前端开发", "中级"), ("前端开发", "高级"),
+    ("实施工程师", "初级"), ("实施工程师", "中级"), ("实施工程师", "高级"),
+    ("技术支持工程师", "初级"), ("技术支持工程师", "中级"), ("技术支持工程师", "高级"),
+    ("测试工程师", "初级"), ("测试工程师", "中级"), ("测试工程师", "高级"),
+    ("硬件测试", "初级"), ("硬件测试", "中级"), ("硬件测试", "高级"),
+    ("软件测试", "初级"), ("软件测试", "中级"), ("软件测试", "高级"),
+    ("科研人员", "顶级"),
+    ("项目经理/主管", "顶级")
 ]
 
-# 横向换岗（现实可行路径，每个岗位≥2条）
-TRANSFER_PATHS = {
+# 同岗位垂直晋升
+INTERNAL_PROMOTION_MAP = {
+    "C/C++初级": "C/C++中级",
+    "C/C++中级": "C/C++高级",
+    "Java初级": "Java中级",
+    "Java中级": "Java高级",
+    "前端开发初级": "前端开发中级",
+    "前端开发中级": "前端开发高级",
+    "实施工程师初级": "实施工程师中级",
+    "实施工程师中级": "实施工程师高级",
+    "技术支持工程师初级": "技术支持工程师中级",
+    "技术支持工程师中级": "技术支持工程师高级",
+    "测试工程师初级": "测试工程师中级",
+    "测试工程师中级": "测试工程师高级",
+    "硬件测试初级": "硬件测试中级",
+    "硬件测试中级": "硬件测试高级",
+    "软件测试初级": "软件测试中级",
+    "软件测试中级": "软件测试高级"
+}
+
+# 跨岗位晋升
+CROSS_PROMOTION_MAP = [
+    ("C/C++高级", "项目经理/主管顶级"),
+    ("Java高级", "项目经理/主管顶级"),
+    ("前端开发高级", "项目经理/主管顶级"),
+    ("实施工程师高级", "项目经理/主管顶级"),
+    ("技术支持工程师高级", "项目经理/主管顶级"),
+    ("测试工程师高级", "项目经理/主管顶级"),
+    ("硬件测试高级", "项目经理/主管顶级"),
+    ("软件测试高级", "项目经理/主管顶级"),
+    ("科研人员顶级", "项目经理/主管顶级")
+]
+
+# 横向换岗路径
+TRANSFER_BASE = {
     "C/C++": ["Java", "硬件测试", "实施工程师"],
     "Java": ["C/C++", "软件测试", "技术支持工程师"],
     "前端开发": ["测试工程师", "实施工程师", "项目经理/主管"],
@@ -54,7 +73,7 @@ TRANSFER_PATHS = {
 }
 
 
-# ---------------------- 2. Neo4j操作类 ----------------------
+# ---------------------- 2. Neo4j 操作类（完全保留） ----------------------
 class RealJobGraph:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -72,121 +91,183 @@ class RealJobGraph:
             session.run("MATCH (n) DELETE n")
             print("✅ 数据库已清空")
 
-    def create_job_node(self, job_name, job_level, skills="", cert="", exp=""):
+    def create_job_node(self, job_full_name, skills="", cert="", exp=""):
+        job_name = None
+        job_level = None
+        for level in JOB_LEVELS:
+            if job_full_name.endswith(level):
+                job_name = job_full_name[:-len(level)]
+                job_level = level
+                break
+
+        if isinstance(skills, str):
+            skills_list = [s.strip() for s in re.split(r'[,，;；]', skills) if s.strip()]
+        else:
+            skills_list = []
+
+        cert = cert.strip() if isinstance(cert, str) else "无"
+        exp = exp.strip() if isinstance(exp, str) else "无"
+
         query = """
-        MERGE (j:Job {name: $job_name, level: $job_level})
-        SET j.skills = $skills, j.cert = $cert, j.exp = $exp
+        MERGE (j:Job {name: $job_full_name})
+        SET j.job_name = $job_name,
+            j.level = $job_level,
+            j.skills = $skills,
+            j.skills_str = $skills_str,
+            j.cert = $cert,
+            j.exp = $exp
         """
         with self.driver.session() as session:
-            session.run(query, job_name=job_name, job_level=job_level, skills=skills, cert=cert, exp=exp)
-            print(f"✅ 节点：{job_name}-{job_level}")
+            session.run(
+                query,
+                job_full_name=job_full_name,
+                job_name=job_name,
+                job_level=job_level,
+                skills=skills_list,
+                skills_str=skills,
+                cert=cert,
+                exp=exp
+            )
 
     def create_internal_promotion(self):
-        """创建同岗位垂直晋升"""
-        for job, levels in INTERNAL_PROMOTION.items():
-            for i in range(len(levels) - 1):
-                from_lvl = levels[i]
-                to_lvl = levels[i + 1]
-                query = """
-                MATCH (a:Job {name: $job, level: $from_lvl})
-                MATCH (b:Job {name: $job, level: $to_lvl})
-                MERGE (a)-[r:PROMOTE_TO {type: '垂直晋升', desc: '同岗位技术晋升'}]->(b)
-                """
-                with self.driver.session() as session:
-                    session.run(query, job=job, from_lvl=from_lvl, to_lvl=to_lvl)
-                    print(f"✅ 晋升：{job}-{from_lvl} → {job}-{to_lvl}")
+        for from_node, to_node in INTERNAL_PROMOTION_MAP.items():
+            query = """
+            MATCH (a:Job {name: $from_node})
+            MATCH (b:Job {name: $to_node})
+            MERGE (a)-[r:PROMOTE_TO {type: '垂直晋升', desc: '同岗位技术晋升'}]->(b)
+            """
+            with self.driver.session() as session:
+                session.run(query, from_node=from_node, to_node=to_node)
 
     def create_cross_promotion(self):
-        """创建跨岗位晋升（技术→管理）"""
-        for from_job, from_lvl, to_job, to_lvl in CROSS_PROMOTION:
+        for from_node, to_node in CROSS_PROMOTION_MAP:
             query = """
-            MATCH (a:Job {name: $from_job, level: $from_lvl})
-            MATCH (b:Job {name: $to_job, level: $to_lvl})
+            MATCH (a:Job {name: $from_node})
+            MATCH (b:Job {name: $to_node})
             MERGE (a)-[r:PROMOTE_TO {type: '跨岗晋升', desc: '技术转管理/专家岗'}]->(b)
             """
             with self.driver.session() as session:
-                session.run(query, from_job=from_job, from_lvl=from_lvl, to_job=to_job, to_lvl=to_lvl)
-                print(f"✅ 跨岗晋升：{from_job}-{from_lvl} → {to_job}-{to_lvl}")
+                session.run(query, from_node=from_node, to_node=to_node)
 
     def create_transfer_paths(self):
-        """创建横向换岗路径"""
-        for from_job, to_jobs in TRANSFER_PATHS.items():
-            with self.driver.session() as session:
-                res = session.run("MATCH (a:Job {name: $job}) RETURN a.level", job=from_job)
-                from_lvls = [r["a.level"] for r in res]
+        transfer_mapping = {}
+        for from_base, to_bases in TRANSFER_BASE.items():
+            for level in ["初级", "中级", "高级"]:
+                from_full = f"{from_base}{level}"
+                if from_full not in [job[0] + job[1] for job in ALL_JOBS]:
+                    continue
+                transfer_mapping[from_full] = []
+                for to_base in to_bases:
+                    to_level = level if (to_base, level) in ALL_JOBS else "顶级"
+                    to_full = f"{to_base}{to_level}"
+                    transfer_mapping[from_full].append(to_full)
+            if (from_base, "顶级") in ALL_JOBS:
+                from_full = f"{from_base}顶级"
+                transfer_mapping[from_full] = []
+                for to_base in to_bases:
+                    to_level = "顶级" if (to_base, "顶级") in ALL_JOBS else "高级"
+                    to_full = f"{to_base}{to_level}"
+                    transfer_mapping[from_full].append(to_full)
 
-            for from_lvl in from_lvls:
-                for to_job in to_jobs:
-                    with self.driver.session() as session:
-                        res = session.run("MATCH (b:Job {name: $job}) RETURN b.level", job=to_job)
-                        to_lvls = [r["b.level"] for r in res]
-                    to_lvl = from_lvl if from_lvl in to_lvls else ("顶级" if "顶级" in to_lvls else to_lvls[0])
+        for from_node, to_nodes in transfer_mapping.items():
+            for to_node in to_nodes:
+                query = """
+                MATCH (a:Job {name: $from_node})
+                MATCH (b:Job {name: $to_node})
+                MERGE (a)-[r:CAN_TRANSFER_TO {type: '横向换岗', desc: '岗位能力迁移'}]->(b)
+                """
+                with self.driver.session() as session:
+                    session.run(query, from_node=from_node, to_node=to_node)
 
-                    query = """
-                    MATCH (a:Job {name: $from_job, level: $from_lvl})
-                    MATCH (b:Job {name: $to_job, level: $to_lvl})
-                    MERGE (a)-[r:CAN_TRANSFER_TO {type: '横向换岗', desc: '岗位能力迁移'}]->(b)
-                    """
-                    with self.driver.session() as session:
-                        session.run(query, from_job=from_job, from_lvl=from_lvl, to_job=to_job, to_lvl=to_lvl)
-                        print(f"✅ 换岗：{from_job}-{from_lvl} → {to_job}-{to_lvl}")
+    def get_promotion_skills(self, job_full_name):
+        query = """
+        MATCH (current:Job {name: $job_full_name})-[r:PROMOTE_TO]->(target:Job)
+        WITH current, target, r
+        UNWIND target.skills AS target_skill
+        WITH current, target, r, collect(DISTINCT target_skill) AS target_skills
+        UNWIND current.skills AS current_skill
+        WITH current, target, r, target_skills, collect(DISTINCT current_skill) AS current_skills
+        WITH current, target, r, 
+             [skill IN target_skills WHERE NOT skill IN current_skills] AS missing_skills
+        RETURN 
+            current.name AS 当前岗位,
+            target.name AS 晋升目标,
+            r.type AS 晋升类型,
+            missing_skills AS 需要学习的技能,
+            size(missing_skills) AS 技能缺口数,
+            target.exp AS 目标岗位经验要求
+        ORDER BY 技能缺口数 DESC
+        """
+        with self.driver.session() as session:
+            result = session.run(query, job_full_name=job_full_name)
+            return pd.DataFrame([record.data() for record in result])
+
+    def get_transfer_skills(self, job_full_name):
+        query = """
+        MATCH (current:Job {name: $job_full_name})-[r:CAN_TRANSFER_TO]->(target:Job)
+        WITH current, target, r
+        UNWIND target.skills AS target_skill
+        WITH current, target, r, collect(DISTINCT target_skill) AS target_skills
+        UNWIND current.skills AS current_skill
+        WITH current, target, r, target_skills, collect(DISTINCT current_skill) AS current_skills
+        WITH current, target, r, 
+             [skill IN target_skills WHERE NOT skill IN current_skills] AS missing_skills
+        RETURN 
+            current.name AS 当前岗位,
+            target.name AS 换岗目标,
+            r.type AS 换岗类型,
+            missing_skills AS 需要学习的技能,
+            size(missing_skills) AS 技能缺口数,
+            target.exp AS 目标岗位经验要求
+        ORDER BY 技能缺口数 DESC
+        """
+        with self.driver.session() as session:
+            result = session.run(query, job_full_name=job_full_name)
+            return pd.DataFrame([record.data() for record in result])
 
 
-# ---------------------- 3. 主流程 ----------------------
+# ---------------------- 3. 主流程（已完善，路径正确） ----------------------
 def build_real_career_graph():
-    # 1. 加载岗位数据
+    # 读取新Excel
     try:
-        df = pd.read_excel(INPUT_FILE)
-    except:
-        df = pd.DataFrame(columns=["岗位名称", "岗位级别", "专业技能", "证书要求", "经验要求"])
+        df = pd.read_excel(INPUT_FILE, engine='openpyxl')
+        print(f"✅ 成功加载新Excel：{len(df)} 条数据")
+    except Exception as e:
+        print(f"❌ 加载失败：{e}")
+        return
 
-    # 2. 初始化Neo4j
     graph = RealJobGraph(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     graph.clear_db()
 
-    # 3. 创建所有岗位节点
-    job_levels = [
-        ("C/C++", "中级"), ("C/C++", "初级"), ("C/C++", "高级"),
-        ("Java", "中级"), ("Java", "初级"), ("Java", "高级"),
-        ("前端开发", "中级"), ("前端开发", "初级"), ("前端开发", "高级"),
-        ("实施工程师", "中级"), ("实施工程师", "初级"), ("实施工程师", "高级"),
-        ("技术支持工程师", "中级"), ("技术支持工程师", "初级"), ("技术支持工程师", "高级"),
-        ("测试工程师", "中级"), ("测试工程师", "初级"), ("测试工程师", "高级"),
-        ("硬件测试", "中级"), ("硬件测试", "初级"), ("硬件测试", "高级"),
-        ("科研人员", "顶级"),
-        ("软件测试", "中级"), ("软件测试", "初级"), ("软件测试", "高级"),
-        ("项目经理/主管", "顶级")
-    ]
-    for job, lvl in job_levels:
-        row = df[(df["岗位名称"] == job) & (df["岗位级别"] == lvl)]
-        skills = row["专业技能"].values[0] if len(row) else "无"
-        cert = row["证书要求"].values[0] if len(row) else "无"
-        exp = row["经验要求"].values[0] if len(row) else "无"
-        graph.create_job_node(job, lvl, skills, cert, exp)
+    print("\n===== 开始创建岗位节点 =====")
+    for job_base, level in ALL_JOBS:
+        job_full_name = f"{job_base}{level}"
+        row = df[(df["岗位名称"] == job_base) & (df["岗位级别"] == level)]
 
-    # 4. 构建晋升与换岗
+        # 安全读取数据
+        skills = row["专业技能"].values[0] if len(row) > 0 and not pd.isna(row["专业技能"].values[0]) else "无"
+        cert = row["证书要求"].values[0] if len(row) > 0 and not pd.isna(row["证书要求"].values[0]) else "无"
+        exp = row["经验要求"].values[0] if len(row) > 0 and not pd.isna(row["经验要求"].values[0]) else "无"
+
+        graph.create_job_node(job_full_name, skills, cert, exp)
+        print(f"✅ {job_full_name}")
+
+    # 构建关系
     graph.create_internal_promotion()
     graph.create_cross_promotion()
     graph.create_transfer_paths()
 
+    # 示例查询
+    print("\n===== Java 初级 晋升技能 =====")
+    print(graph.get_promotion_skills("Java初级").to_string(index=False))
+
+    print("\n===== Java 中级 换岗技能 =====")
+    print(graph.get_transfer_skills("Java中级").to_string(index=False))
+
     graph.close()
-    print("\n🎉 现实职业路径图谱构建完成！")
+    print("\n🎉 职业图谱构建完成！")
 
 
-# ---------------------- 4. 验证查询 ----------------------
+# ---------------------- 运行 ----------------------
 if __name__ == "__main__":
     build_real_career_graph()
-    print("""
-📌 查看现实路径的Cypher语句：
-1. 查看Java完整职业路径：
-MATCH p=(a:Job {name:"Java", level:"初级"})-[*]->(b:Job {name:"项目经理/主管"})
-RETURN p
-
-2. 查看所有技术→管理的晋升路径：
-MATCH (a)-[r:PROMOTE_TO {type:"跨岗晋升"}]->(b:Job {name:"项目经理/主管"})
-RETURN a.name, a.level, r.desc, b.name
-
-3. 查看前端开发的换岗路径：
-MATCH (a:Job {name:"前端开发"})-[r:CAN_TRANSFER_TO]->(b)
-RETURN a.name, a.level, r.type, b.name, b.level
-""")
