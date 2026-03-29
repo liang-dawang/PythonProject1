@@ -1,34 +1,27 @@
 from fastapi import FastAPI
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.middleware.cors import CORSMiddleware
+from app.resume.router import resume_router
+from app.resumedata.router import data_router
 
 app = FastAPI()
 
-# 自定义 Swagger UI 文档，使用国内 CDN
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html():
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - Swagger UI",
-        # 使用 BootCDN 提供的 Swagger UI 资源
-        swagger_js_url="https://cdn.bootcdn.net/ajax/libs/swagger-ui/5.1.3/swagger-ui-bundle.js",
-        swagger_css_url="https://cdn.bootcdn.net/ajax/libs/swagger-ui/5.1.3/swagger-ui.css",
-    )
+# 🔥 跨域配置【修复版】
+# 不能用 * + allow_credentials=True，浏览器直接封杀！
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# 你的接口定义
-@app.get("/")
-def read_root():
-    return {"Hello": "FastAPI"}
+# 注册路由
+app.include_router(resume_router)
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str | None = None):
-    return {"item_id": item_id, "q": q}
-
-@app.get("/hello")
-async def gethello():
-    return {"msg":"老铁666"}
-
-
-# 标记核心岗位后的文件路径（比如桌面）
-INPUT_FILE = r"E:\pycharm\PythonProject1\标记核心岗位后的数据.xlsx"
-# 清洗后保存路径
-OUTPUT_FILE = r"E:\pycharm\PythonProject1\清洗薪资后的数据.xlsx"
+app.include_router(data_router)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
